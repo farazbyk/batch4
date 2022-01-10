@@ -3,19 +3,82 @@ provider "aws" {
   region  = "us-east-1"
   profile = "default"
 }
-resource "aws_key_pair" "deployer" {
-  key_name   = "deployer-key-1"
-  public_key = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDUntO0DMa5tkSQywtn6zsB8kMVbJDl26h6m/MlB/goM7WClXf4FZ9dejZioKS6j01bl7oD/K7pf9IzECtUHn/Y7yc52xQf8zHeueU67gCgH/LuZkTD5WzKd/VOpijLE1u1LxBPDk8dnZd3JT6osHTvfOi6rYv6vY3hh+Vw1uAetuIycBKKDeqmnPoL2J0Lh2x7gpm90OT4PPS2nWwhhslExCPXob/X4SGCRKGa2aXfPnTwqTSPYlC4Enm8IZ2gPeV+rnI1WcneYWAixTG4+D+yO//BaxNM2+n7BSkeCu3OGQObLXf1IQwPDBYdy5zhuHx/zghSoWfXhqy84Ge5toip"
-  #public_key = "ssh-rsa AFucbN1jjItcVov1ETCchbFQzeWoOm8BiVPYNDAvAJgnzLRzZys5rHrr46ISn2CaxJuT4S2uixHYv+wfhOGagpnBDzIhWGG8zI9b5krNj+QyYQ9j37O314YgRFQdOPNs0sUKV2kkSjuSpOCbiNYnEDxtgNKjg3/UelPwTF1XrtQavgW0vkd4zfggJpzT/beaiqHNUdIjKQUcLn8QSek9YCEwmF5h9Hkn6q/sLOT"
+
+resource "aws_vpc" "vpc" {
+  cidr_block = "${var.cidr_vpc}"
+  enable_dns_support   = true
+  enable_dns_hostnames = true
+  tags = {
+    Name = "${var.environment_tag}"
+  }
 }
 
-resource "aws_instance" "example" {
-  ami           = var.ami_id
-  instance_type = "t2.micro"
-  associate_public_ip_address = false
-  vpc_security_group_ids = var.sg_ids
-  subnet_id   = "subnet-98008bb7"
-  key_name = aws_key_pair.deployer.key_name
+resource "aws_subnet" "public" {    # Creating Public Subnets
+  count = "${length(var.subnet_cidrs_public)}"
+  vpc_id =  aws_vpc.vpc.id
+  cidr_block = "${var.subnet_cidrs_public[count.index]}"        # CIDR block of public subnets
+   availability_zone = "${var.availability_zones[count.index]}"
+}
+
+
+resource "aws_subnet" "private" {    # Creating Public Subnets
+  count = "${length(var.subnet_cidrs_private)}"
+  vpc_id =  aws_vpc.vpc.id
+  cidr_block = "${var.subnet_cidrs_private[count.index]}"        # CIDR block of public subnets
+   availability_zone = "${var.availability_zones[count.index]}"
+  map_public_ip_on_launch = false
+}
+
+resource "aws_internet_gateway" "IGW" {    # Creating Internet Gateway
+    vpc_id =  aws_vpc.vpc.id               # vpc_id will be generated after we create VPC
+}
+
+resource "aws_route_table" "PublicRT" {    # Creating RT for Public Subnet
+    vpc_id =  aws_vpc.vpc.id
+        route {
+    cidr_block = "0.0.0.0/0"               # Traffic from Public Subnet reaches Internet via Internet Gateway
+    gateway_id = aws_internet_gateway.IGW.id
+    }
+}
+
+resource "aws_eip" "nat1" {
+  depends_on = [aws_internet_gateway.IGW]
+}
+
+resource "aws_nat_gateway" "nat_gw" {
+  subnet_id     = aws_subnet.public[0].id
+   allocation_id = aws_eip.nat1.id
+
   tags = {
-      "Name" = "ec2-terraform-faraz"  }
+    Name = "gw NAT"
   }
+
+  # To ensure proper ordering, it is recommended to add an explicit dependency
+  # on the Internet Gateway for the VPC.
+  depends_on = [aws_internet_gateway.IGW]
+}
+
+  
+resource "aws_route_table" "PrivateRT" {    # Creating RT for Private Subnet
+  vpc_id = aws_vpc.vpc.id
+  route {
+  cidr_block = "0.0.0.0/0"             # Traffic from Private Subnet reaches Internet via NAT Gateway
+  nat_gateway_id = aws_nat_gateway.nat_gw.id
+  }
+}
+
+
+resource "aws_route_table_association" "PublicRTassociation" {
+    count = "${length(var.subnet_cidrs_public)}"
+
+    subnet_id      = "${element(aws_subnet.public.*.id, count.index)}"
+    route_table_id = aws_route_table.PublicRT.id
+
+}
+
+resource "aws_route_table_association" "PrivateRTassociation" {
+    count = "${length(var.subnet_cidrs_private)}"
+     subnet_id      = "${element(aws_subnet.private.*.id, count.index)}"
+#    subnet_id = aws_subnet.privatesubnets.id
+    route_table_id = aws_route_table.PrivateRT.id
+}
