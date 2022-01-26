@@ -17,3 +17,6 @@ output "private_cidr_block" {
 output "vpc_id" { 
   value = aws_vpc.vpc.id
 } 
+output "lb_arn" {
+  value = aws_elb.web_elb.arn
+}
